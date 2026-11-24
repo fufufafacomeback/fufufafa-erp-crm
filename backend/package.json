@@ -11,7 +11,9 @@
     "production": "NODE_ENV=production",
     "setup": "node src/setup/setup.js",
     "upgrade": "node src/setup/upgrade.js",
-    "reset": "node src/setup/reset.js"
+    "reset": "node src/setup/reset.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "test:watch": "node --test --watch \"test/**/*.test.js\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.509.0",
@@ -25,9 +27,10 @@
     "express-fileupload": "^1.4.3",
     "express-rate-limit": "^7.1.5",
     "glob": "10.3.10",
+    "helmet": "^8.3.0",
     "html-pdf": "^3.0.1",
     "joi": "^17.11.0",
-    "jsonwebtoken": "^9.0.2",
+    "jsonwebtoken": "^9.0.3",
     "lodash": "^4.17.21",
     "module-alias": "^2.2.3",
     "moment": "^2.30.1",
