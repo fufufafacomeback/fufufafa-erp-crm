@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, dev, setup/test]
+  pull_request:
+    branches: [main, master, dev]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (syntax + smoke)
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE: mongodb://localhost:27017/idurar_ci
+      JWT_SECRET: ci-only-secret-not-used-in-production
+      NODE_ENV: test
+      PORT: 8888
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install
+        working-directory: backend
+        run: npm ci
+
+      - name: Syntax check
+        working-directory: backend
+        run: |
+          node -e "
+          const { globSync } = require('glob');
+          const { execFileSync } = require('child_process');
+          const files = globSync('./src/**/*.js');
+          let bad = 0;
+          for (const f of files) {
+            try { execFileSync(process.execPath, ['--check', f], { stdio: 'pipe' }); }
+            catch (e) { bad++; console.error('SYNTAX FAIL', f); }
+          }
+          console.log('checked', files.length, 'files, failures:', bad);
+          if (bad) process.exit(1);
+          "
+
+      - name: Load models and routes
+        working-directory: backend
+        run: |
+          node -e "
+          require('module-alias/register');
+          const { globSync } = require('glob');
+          const path = require('path');
+          for (const f of globSync('./src/models/**/*.js')) require(path.resolve(f));
+          require('./src/app');
+          console.log('models and app loaded OK');
+          "
+
+      - name: Setup database
+        working-directory: backend
+        run: npm run setup
+
+      - name: Start server and smoke test
+        working-directory: backend
+        run: |
+          npm start &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://localhost:8888/api/login -X POST \
+              -H 'Content-Type: application/json' -d '{}'; then break; fi
+            sleep 1
+          done
+          echo "--- login as seeded admin ---"
+          BODY=$(curl -s -X POST http://localhost:8888/api/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"admin@admin.com","password":"admin123"}')
+          echo "$BODY" | head -c 200
+          echo
+          echo "$BODY" | grep -q '"success":true' || { echo "LOGIN FAILED"; kill $SERVER_PID; exit 1; }
+          TOKEN=$(echo "$BODY" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).result.token))")
+          echo "--- authenticated request (203 = empty collection, also valid) ---"
+          AUTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            http://localhost:8888/api/client/list -H "Authorization: Bearer $TOKEN")
+          echo "GET /api/client/list (with token) -> $AUTH_CODE"
+          case "$AUTH_CODE" in
+            200|203) ;;
+            *) echo "AUTHENTICATED REQUEST FAILED: expected 200 or 203"; kill $SERVER_PID; exit 1 ;;
+          esac
+          echo "--- unauthenticated request must be rejected ---"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8888/api/client/list)
+          echo "GET /api/client/list (no token) -> $CODE"
+          [ "$CODE" = "401" ] || { echo "AUTH BYPASS: expected 401"; kill $SERVER_PID; exit 1; }
+          kill $SERVER_PID
+
+  frontend:
+    name: Frontend (build)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  secrets:
+    name: No secrets committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if .env files are tracked
+        run: |
+          if git ls-files | grep -E '(^|/)\.env$|(^|/)[^/]*\.env$'; then
+            echo "::error::A .env file is tracked by git. Remove it with: git rm --cached <file>"
+            exit 1
+          fi
+          echo "No .env files tracked."
+
+      - name: Fail on obvious secret patterns
+        run: |
+          if grep -rnE 'sk-[A-Za-z0-9]{20,}' --include='*.js' --include='*.jsx' --include='*.json' --include='*.yml' --include='*.yaml' . \
+             --exclude-dir=node_modules --exclude-dir=dist --exclude=package-lock.json; then
+            echo "::error::Possible hardcoded API key found"
+            exit 1
+          fi
+          echo "No hardcoded keys found."
