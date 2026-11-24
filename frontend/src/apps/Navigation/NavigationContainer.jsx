@@ -14,7 +14,6 @@ import {
   SettingOutlined,
   CustomerServiceOutlined,
   ContainerOutlined,
-  FileSyncOutlined,
   DashboardOutlined,
   TagOutlined,
   TagsOutlined,
@@ -64,11 +63,6 @@ function Sidebar({ collapsible, isMobile = false }) {
       key: 'invoice',
       icon: <ContainerOutlined />,
       label: <Link to={'/invoice'}>{translate('invoices')}</Link>,
-    },
-    {
-      key: 'quote',
-      icon: <FileSyncOutlined />,
-      label: <Link to={'/quote'}>{translate('quote')}</Link>,
     },
     {
       key: 'payment',

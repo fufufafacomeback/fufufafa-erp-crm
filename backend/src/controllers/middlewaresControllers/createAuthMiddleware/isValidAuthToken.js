@@ -4,10 +4,9 @@ const mongoose = require('mongoose');
 
 const isValidAuthToken = async (req, res, next, { userModel, jwtSecret = 'JWT_SECRET' }) => {
   try {
-    const UserPassword = mongoose.model(userModel + 'Password');
     const User = mongoose.model(userModel);
+    const Session = mongoose.model('Session');
 
-    // const token = req.cookies[`token_${cloud._id}`];
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1]; // Extract the token
 
@@ -29,40 +28,44 @@ const isValidAuthToken = async (req, res, next, { userModel, jwtSecret = 'JWT_SE
         jwtExpired: true,
       });
 
-    const userPasswordPromise = UserPassword.findOne({ user: verified.id, removed: false });
-    const userPromise = User.findOne({ _id: verified.id, removed: false });
+    // The token must still have a live session. This is what makes logout and
+    // revocation take effect immediately instead of at token expiry.
+    const session = await Session.findOne({
+      tokenHash: Session.hashToken(token),
+      user: verified.id,
+      expiresAt: { $gt: new Date() },
+    });
 
-    const [user, userPassword] = await Promise.all([userPromise, userPasswordPromise]);
+    if (!session)
+      return res.status(401).json({
+        success: false,
+        result: null,
+        message: 'Session expired or logged out, authorization denied.',
+        jwtExpired: true,
+      });
+
+    const user = await User.findOne({ _id: verified.id, removed: false });
 
     if (!user)
       return res.status(401).json({
         success: false,
         result: null,
-        message: "User doens't Exist, authorization denied.",
+        message: "User doesn't Exist, authorization denied.",
         jwtExpired: true,
       });
 
-    const { loggedSessions } = userPassword;
-
-    if (!loggedSessions.includes(token))
-      return res.status(401).json({
-        success: false,
-        result: null,
-        message: 'User is already logout try to login, authorization denied.',
-        jwtExpired: true,
-      });
-    else {
-      const reqUserName = userModel.toLowerCase();
-      req[reqUserName] = user;
-      next();
-    }
+    req[userModel.toLowerCase()] = user;
+    return next();
   } catch (error) {
-    return res.status(500).json({
+    const isTokenError =
+      error.name === 'TokenExpiredError' || error.name === 'JsonWebTokenError';
+
+    return res.status(isTokenError ? 401 : 500).json({
       success: false,
       result: null,
-      message: error.message,
-      error: error,
-      controller: 'isValidAuthToken',
+      message: isTokenError
+        ? 'Invalid or expired token, authorization denied.'
+        : error.message,
       jwtExpired: true,
     });
   }
